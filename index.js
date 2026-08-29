@@ -133,7 +133,7 @@ async function handleTelegramProxy(request, env, url, pathParts) {
     if (!first.startsWith('bot')) {
       return textResponse('Invalid request format', 400);
     }
-    token = first.slice(3);
+    token = first.slice(3).split('/')[0];
   }
 
   if (!token || !validBotToken(token, env)) {
@@ -176,13 +176,10 @@ async function handleRequest(request, env) {
     });
   }
 
-  // New secure webhook endpoint.
   if (url.pathname === '/webhook') {
     return handleWebhook(request, env);
   }
 
-  // Backwards-compatible webhook endpoint from the original project.
-  // It still requires the configured bot token and webhook secret.
   if (pathParts.length === 1 && pathParts[0].startsWith('botRedirect')) {
     const token = pathParts[0].slice('botRedirect'.length);
     if (!token || !validBotToken(token, env)) {
