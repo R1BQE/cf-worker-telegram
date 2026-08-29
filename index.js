@@ -1,127 +1,150 @@
-// CONFIG: Your bot server URL to receive webhook updates
-const BOT_UPDATE_FORWARD_URL = 'https://yourdomain.com/my-bot-handler'; // change this
-
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
 
 const DOC_HTML = `<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Telegram Bot API Proxy Documentation</title>
+    <title>Telegram Bot API Proxy</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            line-height: 1.6;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-            color: #333;
-        }
-        h1 { color: #0088cc; }
-        .code {
-            background: #f5f5f5;
-            padding: 15px;
-            border-radius: 5px;
-            font-family: monospace;
-            overflow-x: auto;
-        }
-        .note {
-            background: #fff3cd;
-            border-left: 4px solid #ffc107;
-            padding: 15px;
-            margin: 20px 0;
-        }
-        .example {
-            background: #e7f5ff;
-            border-left: 4px solid #0088cc;
-            padding: 15px;
-            margin: 20px 0;
-        }
-    </style>
 </head>
 <body>
     <h1>Telegram Bot API Proxy</h1>
-    <p>This service acts as a transparent proxy for the Telegram Bot API. It allows you to bypass network restrictions and create middleware for your Telegram bot applications.</p>
-    <h2>How to Use</h2>
-    <p>Replace <code>api.telegram.org</code> with this worker's URL in your API calls.</p>
-    <div class="example">
-        <h3>Example Usage:</h3>
-        <p>Original Telegram API URL:</p>
-        <div class="code">https://api.telegram.org/bot{YOUR_BOT_TOKEN}/sendMessage</div>
-        <p>Using this proxy:</p>
-        <div class="code">https://{YOUR_WORKER_URL}/bot{YOUR_BOT_TOKEN}/sendMessage</div>
-    </div>
-    <h2>Features</h2>
+    <p>Bidirectional Cloudflare Worker proxy for the Telegram Bot API.</p>
+    <h2>Endpoints</h2>
     <ul>
-        <li>Supports all Telegram Bot API methods</li>
-        <li>Handles both GET and POST requests</li>
-        <li>Full CORS support for browser-based applications</li>
-        <li>Transparent proxying of responses</li>
-        <li>Maintains original status codes and headers</li>
+        <li><code>/bot&lt;TOKEN&gt;/METHOD</code> — Telegram Bot API proxy.</li>
+        <li><code>/file/bot&lt;TOKEN&gt;/PATH</code> — Telegram file download proxy.</li>
+        <li><code>/webhook</code> — authenticated Telegram webhook forwarding.</li>
     </ul>
-    <div class="note">
-        <strong>Note:</strong> This proxy does not store or modify your bot tokens. All requests are forwarded directly to Telegram's API servers.
-    </div>
-    <h2>Example Code</h2>
-    <div class="code">
-// JavaScript Example
-fetch('https://{YOUR_WORKER_URL}/bot{YOUR_BOT_TOKEN}/sendMessage', {
-    method: 'POST',
-    headers: {
-        'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-        chat_id: "123456789",
-        text: "Hello from Telegram Bot API Proxy!"
-    })
-})
-.then(response => response.json())
-.then(data => console.log(data));
-    </div>
+    <p>The secure webhook endpoint requires Telegram's <code>X-Telegram-Bot-Api-Secret-Token</code>.</p>
 </body>
 </html>`;
 
-async function handleRequest(request) {
-  const url = new URL(request.url);
-  const pathParts = url.pathname.split('/').filter(Boolean);
+function textResponse(body, status = 200, headers = {}) {
+  return new Response(body, {
+    status,
+    headers: {
+      'Content-Type': 'text/plain; charset=UTF-8',
+      ...headers,
+    },
+  });
+}
 
-  // Serve docs
-  if (url.pathname === '/' || pathParts.length === 0) {
-    return new Response(DOC_HTML, {
-      headers: {
-        'Content-Type': 'text/html;charset=UTF-8',
-        'Cache-Control': 'public, max-age=3600',
-      },
+function corsHeaders(request) {
+  const requested = request.headers.get('Access-Control-Request-Headers');
+  return {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS, HEAD',
+    'Access-Control-Allow-Headers': requested || 'Content-Type, Authorization',
+    'Access-Control-Max-Age': '86400',
+  };
+}
+
+function optionsResponse(request) {
+  return new Response(null, {
+    status: 204,
+    headers: corsHeaders(request),
+  });
+}
+
+function withCors(response, request) {
+  const result = new Response(response.body, response);
+  for (const [name, value] of Object.entries(corsHeaders(request))) {
+    result.headers.set(name, value);
+  }
+  return result;
+}
+
+function constantTimeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) {
+    return false;
+  }
+
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
+}
+
+function validBotToken(token, env) {
+  if (!env.TELEGRAM_BOT_TOKEN) {
+    return true;
+  }
+  return constantTimeEqual(token, env.TELEGRAM_BOT_TOKEN);
+}
+
+async function handleWebhook(request, env) {
+  if (request.method !== 'POST') {
+    return textResponse('Method Not Allowed', 405, { Allow: 'POST' });
+  }
+
+  if (!env.BOT_UPDATE_FORWARD_URL) {
+    return textResponse('Webhook backend is not configured', 503);
+  }
+
+  if (!env.WEBHOOK_SECRET) {
+    return textResponse('Webhook secret is not configured', 503);
+  }
+
+  const suppliedSecret = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
+  if (!constantTimeEqual(suppliedSecret || '', env.WEBHOOK_SECRET)) {
+    return textResponse('Unauthorized', 401);
+  }
+
+  const headers = new Headers(request.headers);
+  headers.delete('X-Telegram-Bot-Api-Secret-Token');
+
+  if (env.BACKEND_SECRET) {
+    headers.set('X-Proxy-Secret', env.BACKEND_SECRET);
+  }
+
+  try {
+    const forwardRequest = new Request(env.BOT_UPDATE_FORWARD_URL, {
+      method: 'POST',
+      headers,
+      body: request.body,
+      redirect: 'follow',
     });
-  }
 
-  // Webhook redirection: POST to /botRedirect<TOKEN>
-  if (pathParts.length === 1 && pathParts[0].startsWith('botRedirect') && request.method === 'POST') {
-    try {
-      const forwardReq = new Request(BOT_UPDATE_FORWARD_URL, {
-        method: 'POST',
-        headers: request.headers,
-        body: request.body,
-      });
-      const response = await fetch(forwardReq);
-      return new Response(response.body, response);
-    } catch (err) {
-      return new Response(`Failed to forward webhook: ${err.message}`, { status: 500 });
+    const response = await fetch(forwardRequest);
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  } catch (error) {
+    return textResponse(`Failed to forward webhook: ${error.message}`, 502);
+  }
+}
+
+async function handleTelegramProxy(request, env, url, pathParts) {
+  const first = pathParts[0];
+  const isFileRequest = first === 'file';
+
+  let token;
+  if (isFileRequest) {
+    const botPart = pathParts[1];
+    if (!botPart || !botPart.startsWith('bot')) {
+      return textResponse('Invalid request format', 400);
     }
+    token = botPart.slice(3);
+  } else {
+    if (!first.startsWith('bot')) {
+      return textResponse('Invalid request format', 400);
+    }
+    token = first.slice(3);
   }
 
-  // Proxy to Telegram API
-  const isFileReq = pathParts[0] === 'file';
-  const isBotReq = pathParts[0].startsWith('bot');
-  if ((!isFileReq && !isBotReq) || (isFileReq && (!pathParts[1] || !pathParts[1].startsWith('bot')))) {
-    return new Response('Invalid request format', { status: 400 });
+  if (!token || !validBotToken(token, env)) {
+    return textResponse('Unauthorized', 401);
   }
 
   const telegramUrl = `${TELEGRAM_API_BASE}${url.pathname}${url.search}`;
   const headers = new Headers(request.headers);
   const contentType = headers.get('Content-Type');
-  if (contentType && contentType.startsWith('application/json') && !contentType.includes('charset')) {
+
+  if (contentType && contentType.toLowerCase().startsWith('application/json') && !contentType.toLowerCase().includes('charset')) {
     headers.set('Content-Type', 'application/json; charset=UTF-8');
   }
 
@@ -133,41 +156,49 @@ async function handleRequest(request) {
   };
 
   try {
-    const tgRes = await fetch(telegramUrl, init);
-    const res = new Response(tgRes.body, tgRes);
-    const reqAllowHeaders = request.headers.get('Access-Control-Request-Headers');
-    const allowHeaders = reqAllowHeaders || 'Content-Type';
-    res.headers.set('Access-Control-Allow-Origin', '*');
-    res.headers.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, HEAD');
-    res.headers.set('Access-Control-Allow-Headers', allowHeaders);
-    return res;
-  } catch (err) {
-    return new Response(`Error proxying request: ${err.message}`, { status: 500 });
+    const telegramResponse = await fetch(telegramUrl, init);
+    return withCors(telegramResponse, request);
+  } catch (error) {
+    return textResponse(`Error proxying request: ${error.message}`, 502);
   }
 }
 
-function handleOptions(request) {
-  const reqAllowHeaders = request.headers.get('Access-Control-Request-Headers');
-  const allowHeaders = reqAllowHeaders || 'Content-Type';
+async function handleRequest(request, env) {
+  const url = new URL(request.url);
+  const pathParts = url.pathname.split('/').filter(Boolean);
 
-  const corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS, HEAD',
-    'Access-Control-Allow-Headers': allowHeaders,
-    'Access-Control-Max-Age': '86400',
-  };
+  if (url.pathname === '/' || pathParts.length === 0) {
+    return new Response(DOC_HTML, {
+      headers: {
+        'Content-Type': 'text/html; charset=UTF-8',
+        'Cache-Control': 'no-store',
+      },
+    });
+  }
 
-  return new Response(null, {
-    status: 204,
-    headers: corsHeaders,
-  });
+  // New secure webhook endpoint.
+  if (url.pathname === '/webhook') {
+    return handleWebhook(request, env);
+  }
+
+  // Backwards-compatible webhook endpoint from the original project.
+  // It still requires the configured bot token and webhook secret.
+  if (pathParts.length === 1 && pathParts[0].startsWith('botRedirect')) {
+    const token = pathParts[0].slice('botRedirect'.length);
+    if (!token || !validBotToken(token, env)) {
+      return textResponse('Unauthorized', 401);
+    }
+    return handleWebhook(request, env);
+  }
+
+  return handleTelegramProxy(request, env, url, pathParts);
 }
 
-addEventListener('fetch', event => {
-  const request = event.request;
-  if (request.method === 'OPTIONS') {
-    event.respondWith(handleOptions(request));
-  } else {
-    event.respondWith(handleRequest(request));
-  }
-});
+export default {
+  async fetch(request, env) {
+    if (request.method === 'OPTIONS') {
+      return optionsResponse(request);
+    }
+    return handleRequest(request, env);
+  },
+};
