@@ -1,5 +1,6 @@
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
 const PROXY_SECRET = 'CHANGE_ME';
+const BOT_UPDATE_FORWARD_URL = 'https://svadba.blind-ham.ru/webhook';
 
 const DOC_HTML = `<!DOCTYPE html>
 <html>
@@ -10,8 +11,9 @@ const DOC_HTML = `<!DOCTYPE html>
 </head>
 <body>
     <h1>Telegram Bot API Proxy</h1>
-    <p>Protected Telegram Bot API proxy.</p>
-    <p>Format: <code>/SECRET/botTOKEN/METHOD</code></p>
+    <p>Protected Telegram Bot API proxy with webhook forwarding.</p>
+    <p>API format: <code>/SECRET/botTOKEN/METHOD</code></p>
+    <p>Webhook format: <code>/SECRET/webhook</code></p>
 </body>
 </html>`;
 
@@ -38,6 +40,37 @@ function withCors(response, request) {
   });
 }
 
+async function forwardWebhook(request, env) {
+  if (request.method !== 'POST') {
+    return new Response('Method Not Allowed', { status: 405 });
+  }
+
+  const backendSecret = env.BACKEND_SECRET;
+  if (!backendSecret) {
+    return new Response('Backend secret is not configured', { status: 500 });
+  }
+
+  const headers = new Headers();
+  headers.set('Content-Type', request.headers.get('Content-Type') || 'application/json');
+  headers.set('X-Proxy-Secret', backendSecret);
+
+  try {
+    const backendResponse = await fetch(BOT_UPDATE_FORWARD_URL, {
+      method: 'POST',
+      headers,
+      body: request.body,
+    });
+
+    return new Response(backendResponse.body, {
+      status: backendResponse.status,
+      statusText: backendResponse.statusText,
+      headers: backendResponse.headers,
+    });
+  } catch (error) {
+    return new Response(`Error forwarding webhook: ${error.message}`, { status: 502 });
+  }
+}
+
 async function handleRequest(request, env) {
   const url = new URL(request.url);
   const parts = url.pathname.split('/').filter(Boolean);
@@ -56,9 +89,6 @@ async function handleRequest(request, env) {
     });
   }
 
-  // Required format:
-  // /SECRET/botTOKEN/METHOD
-  // /SECRET/file/botTOKEN/METHOD
   const secret = env.PROXY_SECRET || PROXY_SECRET;
 
   if (!secret || secret === 'CHANGE_ME') {
@@ -69,13 +99,20 @@ async function handleRequest(request, env) {
     return new Response('Unauthorized', { status: 401 });
   }
 
+  // Telegram webhook updates:
+  // /SECRET/webhook -> https://svadba.blind-ham.ru/webhook
+  if (parts.length === 2 && parts[1] === 'webhook') {
+    return forwardWebhook(request, env);
+  }
+
+  // Telegram Bot API proxy:
+  // /SECRET/botTOKEN/METHOD
+  // /SECRET/file/botTOKEN/METHOD
   let telegramPath;
 
   if (parts[1]?.startsWith('bot')) {
-    // /SECRET/botTOKEN/METHOD
     telegramPath = '/' + parts.slice(1).join('/');
   } else if (parts[1] === 'file' && parts[2]?.startsWith('bot')) {
-    // /SECRET/file/botTOKEN/METHOD
     telegramPath = '/file/' + parts.slice(2).join('/');
   } else {
     return new Response('Invalid request format', { status: 400 });
@@ -84,7 +121,6 @@ async function handleRequest(request, env) {
   const telegramUrl = `${TELEGRAM_API_BASE}${telegramPath}${url.search}`;
   const headers = new Headers(request.headers);
 
-  // Do not forward proxy-specific authorization headers to Telegram.
   headers.delete('Authorization');
   headers.delete('Cookie');
   headers.delete('Host');
