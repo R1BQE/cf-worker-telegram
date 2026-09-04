@@ -1,3 +1,6 @@
 name = "fancy-rice-00a9"
 main = "./index.js"
 compatibility_date = "2025-04-01"
+
+[secrets]
+required = ["BOT_UPDATE_FORWARD_URL", "WEBHOOK_SECRET", "BACKEND_SECRET"]
