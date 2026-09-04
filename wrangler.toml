@@ -1,3 +1,6 @@
 name = "fancy-rice-00a9"
 main = "./index.js"
 compatibility_date = "2025-04-01"
+
+[vars]
+BOT_UPDATE_FORWARD_URL = "https://svadba.blind-ham.ru/webhook"
