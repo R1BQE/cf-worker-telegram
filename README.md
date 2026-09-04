@@ -10,32 +10,43 @@ Your backend  <->  Cloudflare Worker  <->  Telegram
 
 The Worker proxies Telegram Bot API requests and can receive Telegram webhook updates and forward them to your backend.
 
-## Configuration
+## Telegram Bot API proxy
 
-Set these as Cloudflare Worker environment variables / Secrets:
+This Worker is intentionally a **universal proxy**. It does not contain or check a specific `TELEGRAM_BOT_TOKEN`.
 
-- `BOT_UPDATE_FORWARD_URL` — HTTPS URL of your backend webhook handler.
-- `WEBHOOK_SECRET` — the same secret configured in Telegram with `setWebhook`.
-- `BACKEND_SECRET` — optional secret sent to your backend as `X-Proxy-Secret`.
-- `TELEGRAM_BOT_TOKEN` — optional. When set, the Worker only accepts requests containing this exact bot token.
-
-For a single bot, setting `TELEGRAM_BOT_TOKEN` is recommended.
-
-## Telegram Bot API
-
-The proxy preserves the original API path:
+Any Telegram bot token can be used in the normal Bot API URL:
 
 ```text
 https://YOUR-WORKER/bot<TOKEN>/sendMessage
 ```
 
-and forwards it to:
+The Worker forwards the request unchanged to:
 
 ```text
 https://api.telegram.org/bot<TOKEN>/sendMessage
 ```
 
+File downloads are also supported:
+
+```text
+https://YOUR-WORKER/file/bot<TOKEN>/FILE_PATH
+```
+
 All Telegram Bot API methods supported by the upstream API can be proxied. Multipart requests and file downloads are supported.
+
+## Environment and secrets
+
+The Worker uses these runtime environment values:
+
+- `BOT_UPDATE_FORWARD_URL` — backend webhook URL.
+- `WEBHOOK_SECRET` — secret configured in Telegram with `setWebhook`.
+- `BACKEND_SECRET` — secret sent to the backend as `X-Proxy-Secret`.
+
+There is deliberately no `TELEGRAM_BOT_TOKEN` variable.
+
+For local development, Wrangler can load these values from a `.env` file located next to `wrangler.toml`. The real `.env` file must never be committed to Git. A safe template is provided as `.env.example`.
+
+For the deployed Worker, the same names are declared as required secrets in `wrangler.toml`. They can be managed in Cloudflare under Worker → Settings → Variables and Secrets, or uploaded from a dotenv file with Wrangler's `--secrets-file` option.
 
 ## Webhook
 
@@ -45,7 +56,7 @@ Use the Worker endpoint:
 https://YOUR-WORKER/webhook
 ```
 
-When registering the webhook, configure Telegram's secret token and use the same value as `WEBHOOK_SECRET`:
+When registering a webhook, configure Telegram's secret token and use the same value as `WEBHOOK_SECRET`:
 
 ```bash
 curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" \
@@ -53,21 +64,37 @@ curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" \
   -d '{"url":"https://YOUR-WORKER/webhook","secret_token":"YOUR_WEBHOOK_SECRET"}'
 ```
 
-Telegram sends the secret in `X-Telegram-Bot-Api-Secret-Token`. The Worker rejects requests with a missing or incorrect secret before forwarding them to your backend.
+Telegram sends the secret in `X-Telegram-Bot-Api-Secret-Token`. The Worker rejects requests with a missing or incorrect secret before forwarding them to the backend.
 
-If `BACKEND_SECRET` is configured, the Worker adds it as `X-Proxy-Secret` when forwarding the webhook. The Telegram secret itself is removed before the request reaches your backend.
+The Telegram secret is removed before forwarding. If `BACKEND_SECRET` is configured, the Worker adds it as `X-Proxy-Secret`.
 
-The original `/botRedirect<TOKEN>` webhook path is retained for compatibility, but it is now protected by the same webhook secret and optional bot-token restriction.
+The legacy `/botRedirect<TOKEN>` webhook path is retained for compatibility and is protected by the same webhook secret.
 
-## Security notes
+## Security
 
-Do not expose bot tokens in source code. Store `TELEGRAM_BOT_TOKEN`, `WEBHOOK_SECRET`, and `BACKEND_SECRET` as Cloudflare Secrets.
+Never commit `.env`, `.env.*`, `.dev.vars`, or `.dev.vars.*` files containing real secrets.
 
-For compatibility with existing Telegram libraries, the Bot API proxy still accepts `/bot<TOKEN>/...`. When `TELEGRAM_BOT_TOKEN` is configured, only your configured bot token is accepted.
+Bot tokens are intentionally not stored in the Worker configuration: they remain in the API paths used by individual bots.
 
 ## Local development
 
-Use Wrangler and provide the secrets through your local `.dev.vars` file or environment configuration. Never commit secrets to Git.
+Install Wrangler and run the Worker with:
+
+```bash
+npx wrangler dev
+```
+
+Create a local `.env` from `.env.example` and put the real values there. Wrangler loads the values into the Worker `env` object during local development.
+
+## Deployment
+
+The Cloudflare Git integration should deploy the `secure-bidirectional` branch with:
+
+```bash
+npx wrangler deploy
+```
+
+The production Worker name is `fancy-rice-00a9`.
 
 ## License
 
