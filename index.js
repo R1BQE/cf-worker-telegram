@@ -67,13 +67,6 @@ function constantTimeEqual(a, b) {
   return result === 0;
 }
 
-function validBotToken(token, env) {
-  if (!env.TELEGRAM_BOT_TOKEN) {
-    return true;
-  }
-  return constantTimeEqual(token, env.TELEGRAM_BOT_TOKEN);
-}
-
 async function handleWebhook(request, env) {
   if (request.method !== 'POST') {
     return textResponse('Method Not Allowed', 405, { Allow: 'POST' });
@@ -118,7 +111,7 @@ async function handleWebhook(request, env) {
   }
 }
 
-async function handleTelegramProxy(request, env, url, pathParts) {
+async function handleTelegramProxy(request, url, pathParts) {
   const first = pathParts[0];
   const isFileRequest = first === 'file';
 
@@ -136,7 +129,9 @@ async function handleTelegramProxy(request, env, url, pathParts) {
     token = first.slice(3).split('/')[0];
   }
 
-  if (!token || !validBotToken(token, env)) {
+  // This Worker is intentionally a universal Telegram Bot API proxy.
+  // Any bot token is accepted; the token is passed through to Telegram unchanged.
+  if (!token) {
     return textResponse('Unauthorized', 401);
   }
 
@@ -144,7 +139,11 @@ async function handleTelegramProxy(request, env, url, pathParts) {
   const headers = new Headers(request.headers);
   const contentType = headers.get('Content-Type');
 
-  if (contentType && contentType.toLowerCase().startsWith('application/json') && !contentType.toLowerCase().includes('charset')) {
+  if (
+    contentType &&
+    contentType.toLowerCase().startsWith('application/json') &&
+    !contentType.toLowerCase().includes('charset')
+  ) {
     headers.set('Content-Type', 'application/json; charset=UTF-8');
   }
 
@@ -180,15 +179,12 @@ async function handleRequest(request, env) {
     return handleWebhook(request, env);
   }
 
+  // Legacy webhook endpoint retained for compatibility.
   if (pathParts.length === 1 && pathParts[0].startsWith('botRedirect')) {
-    const token = pathParts[0].slice('botRedirect'.length);
-    if (!token || !validBotToken(token, env)) {
-      return textResponse('Unauthorized', 401);
-    }
     return handleWebhook(request, env);
   }
 
-  return handleTelegramProxy(request, env, url, pathParts);
+  return handleTelegramProxy(request, url, pathParts);
 }
 
 export default {
