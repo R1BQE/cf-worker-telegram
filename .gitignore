@@ -1,2 +1,10 @@
 .idea
 node_modules
+
+# Local environment files and secrets
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
